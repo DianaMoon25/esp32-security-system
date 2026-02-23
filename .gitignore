@@ -1,0 +1,21 @@
+# Секретные файлы (НИКОГДА не загружать!)
+**/secrets.h
+**/*.secret
+
+# PlatformIO
+.pio/
+.vscode/
+.pioenvs/
+.piolibdeps/
+
+# Сборки
+*.bin
+*.elf
+*.hex
+
+# Временные файлы
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
