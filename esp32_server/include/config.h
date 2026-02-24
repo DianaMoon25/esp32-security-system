@@ -2,6 +2,8 @@
 
 // Пины
 #define LED_PIN 2           // Встроенный светодиод на ESP32
+#define BUZZER_PIN 25
+
 
 // Тайминги (в миллисекундах)
 unsigned long alarmStartTime = 0;
