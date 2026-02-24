@@ -8,11 +8,13 @@
 WebServer server(80);
 FastBot bot(BOT_TOKEN);
 
-// Переменные состояния
+
+// ===== Переменные состояния =====
 bool systemArmed = false;
 bool alarmActive = false;
 
-// Вспомогательная функция для времени
+
+// ===== Вспомогательная функция для времени =====
 String getTimeString() {
     unsigned long seconds = millis() / 1000;
     unsigned long minutes = seconds / 60;
@@ -29,7 +31,44 @@ String getTimeString() {
     return timeStr;
 }
 
-// Обработчик POST запросов от датчиков
+
+// ===== Пьезо-пищалка =====
+
+void playSound(String sound) {
+    if (sound == "alarm") {
+        // Прерывистый сигнал (будет обрабатываться в loop)
+        alarmActive = true;
+    }
+    else if (sound == "boot") {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(50);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(50);
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(50);
+        digitalWrite(BUZZER_PIN, LOW);
+    }
+}
+
+void handleBuzzer() {
+    static unsigned long lastBuzzerToggle = 0;
+    static bool buzzerState = false;
+    
+    if (alarmActive) {
+        // Прерывистый сигнал тревоги
+        if (millis() - lastBuzzerToggle > (buzzerState ? 200 : 500)) {
+            buzzerState = !buzzerState;
+            digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
+            lastBuzzerToggle = millis();
+        }
+    } else {
+        // Убеждаемся что сирена выключена
+        digitalWrite(BUZZER_PIN, LOW);
+    }
+}
+
+
+// ===== Обработчик POST запросов от датчиков =====
 void handleSensorEvent() {
     Serial.println("\n═══════════════════════════════════");
     Serial.println("📥 ПОЛУЧЕН HTTP ЗАПРОС");
@@ -82,6 +121,21 @@ void handleSensorEvent() {
         debugMsg += "Значение: " + value + "\n"; 
         debugMsg += "IP источника: " + server.client().remoteIP().toString();
         bot.sendMessage(debugMsg);
+        if (systemArmed && !alarmActive) {
+            alarmActive = true;
+            alarmStartTime = millis();
+
+            playSound("alarm"); // Запускаем сирену
+        
+            // Отправляем в Telegram
+            String alarmMsg = "🚨🚨🚨 ТРЕВОГА! 🚨🚨🚨\n";
+            alarmMsg += "Обнаружено движение!\n";
+            alarmMsg += "Включена звуковая сигнализация";
+            
+            bot.sendMessage(alarmMsg);
+            
+            Serial.println("🚨 АКТИВИРОВАНА ТРЕВОГА!");
+        }
     }
     
     // Ответ
@@ -95,14 +149,16 @@ void handleSensorEvent() {
     Serial.println("═══════════════════════════════════\n");
 }
 
-// Получение статуса
+
+// ===== Получение статуса =====
 void handleStatus() {
     String status = "{\"armed\":" + String(systemArmed ? "true" : "false") + 
                    ",\"uptime\":" + String(millis() / 1000) + "}";
     server.send(200, "application/json", status);
 }
 
-// Telegram команды
+
+// ===== Telegram команды =====
 void handleTelegramMessage(FB_msg& msg) {
     if (msg.text == "/arm") {
         systemArmed = true;
@@ -118,9 +174,17 @@ void handleTelegramMessage(FB_msg& msg) {
         status += "\nIP: " + WiFi.localIP().toString();
         bot.sendMessage(status, msg.chatID);
     }
+    else if (msg.text == "/test_sound") {
+        playSound("boot");
+        bot.sendMessage("🔊 Тест звука выполнен", msg.chatID);
+    }
 }
 
+
+// ===== Стартовая настройка =====
 void setup() {
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW); // Выключена
     Serial.begin(115200);
     delay(2500);
     
@@ -166,17 +230,21 @@ void setup() {
 
     Serial.println("[5] Настройка завершена");
     Serial.println("═══════════════════════════════════════\n");
+
+    playSound("boot");
 }
 
+
+// ===== Основа =====
 void loop() {
     server.handleClient();  // Обработка HTTP-запросов
     bot.tick();             // Обработка Telegram-сообщений
+    handleBuzzer();         // Обработка звука
 
     // Автоматическое отключение тревоги через 5 минут
     if (alarmActive && (millis() - alarmStartTime > ALARM_TIMEOUT)) {
         alarmActive = false;
         bot.sendMessage("⏰ Тревога автоматически отключена\nПрошло 5 минут");
-        // digitalWrite(RELAY_PIN, LOW);
         Serial.println("Тревога автоматически отключена");
     }
 
