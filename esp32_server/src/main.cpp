@@ -2,16 +2,28 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <FastBot.h>
+#include <SPI.h>
+#include <MFRC522.h>
 #include "secrets.h"
 #include "config.h"
+#include "rfid_tags.h"
 
 WebServer server(80);
 FastBot bot(BOT_TOKEN);
 
 
+// ===== RFID =====
+MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);
+unsigned long lastRFIDRead = 0;
+String lastCardUID = "";
+int cardReadCount = 0;
+
+
 // ===== Переменные состояния =====
 bool systemArmed = false;
 bool alarmActive = false;
+unsigned long alarmStartTime = 0;
+String lastEvent = "";
 
 
 // ===== Вспомогательная функция для времени =====
@@ -32,8 +44,17 @@ String getTimeString() {
 }
 
 
-// ===== Пьезо-пищалка =====
+// ===== Логирование =====
+void logEvent(String event) {
+    lastEvent = event;
+    // Здесь сохраняем в файл/EEPROM
+    Serial.println("Событие: " + event);
+    // Отправляем всем админам (можно хранить chatID в EEPROM)
+    bot.sendMessage("📝 " + event, "ADMIN_CHAT_ID");
+}
 
+
+// ===== Пьезо-пищалка =====
 void playSound(String sound) {
     if (sound == "alarm") {
         // Прерывистый сигнал (будет обрабатываться в loop)
@@ -47,6 +68,19 @@ void playSound(String sound) {
         digitalWrite(BUZZER_PIN, HIGH);
         delay(50);
         digitalWrite(BUZZER_PIN, LOW);
+    }
+    else if (sound == "rfid_ok") {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(50);
+        digitalWrite(BUZZER_PIN, LOW);
+    }
+    else if (sound == "rfid_error") {
+        for(int i = 0; i < 3; i++) {
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(50);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(50);
+        }
     }
 }
 
@@ -65,6 +99,106 @@ void handleBuzzer() {
         // Убеждаемся что сирена выключена
         digitalWrite(BUZZER_PIN, LOW);
     }
+}
+
+
+// === ФУНКЦИЯ ДЛЯ RFID ===
+void initRFID() {
+    SPI.begin();           // Инициализация SPI
+    rfid.PCD_Init();       // Инициализация RFID
+    rfid.PCD_DumpVersionToSerial(); // Вывод информации о модуле
+    
+    Serial.println("✅ RFID модуль инициализирован");
+    Serial.print("Версия прошивки: 0x");
+    Serial.println(rfid.PCD_ReadRegister(rfid.VersionReg), HEX);
+}
+
+void checkRFID() {
+    // Проверяем с нужной периодичностью
+    if (millis() - lastRFIDRead < RFID_READ_DELAY) {
+        return;
+    }
+    lastRFIDRead = millis();
+    
+    // Проверяем наличие новой карты
+    if (!rfid.PICC_IsNewCardPresent()) {
+        return;
+    }
+    
+    // Пытаемся прочитать карту
+    if (!rfid.PICC_ReadCardSerial()) {
+        return;
+    }
+    
+    // Получаем UID карты в формате "A1 B2 C3 D4"
+    String uid = "";
+    for (byte i = 0; i < rfid.uid.size; i++) {
+        if (rfid.uid.uidByte[i] < 0x10) uid += "0";
+        uid += String(rfid.uid.uidByte[i], HEX);
+        if (i < rfid.uid.size - 1) uid += " ";
+    }
+    uid.toUpperCase();
+    
+    // Защита от повторного чтения одной карты
+    if (uid == lastCardUID) {
+        cardReadCount++;
+        if (cardReadCount < 3) { // Пропускаем повторные чтения
+            rfid.PICC_HaltA();
+            return;
+        }
+    } else {
+        lastCardUID = uid;
+        cardReadCount = 1;
+    }
+    
+    Serial.print("\n📇 RFID карта обнаружена! UID: ");
+    Serial.println(uid);
+    
+    // Проверяем карту
+    String owner = checkRFIDTag(uid);
+    
+    // Формируем сообщение для Telegram
+    String cardMsg = "📇 RFID карта:\n";
+    cardMsg += "UID: " + uid + "\n";
+    
+    if (owner == "unknown") {
+        // Неизвестная карта
+        cardMsg += "⛔ НЕИЗВЕСТНАЯ КАРТА!";
+        bot.sendMessage(cardMsg);
+        playSound("rfid_error");
+        
+        // Логируем попытку доступа
+        logEvent("RFID_ERROR: Неизвестная карта " + uid);
+    }
+    else if (owner == "disabled") {
+        // Отключенная карта
+        cardMsg += "⛔ КАРТА ОТКЛЮЧЕНА!";
+        bot.sendMessage(cardMsg);
+        playSound("rfid_error");
+        
+        logEvent("RFID_ERROR: Отключенная карта " + uid);
+    }
+    else {
+        // Разрешенная карта - переключаем охрану
+        systemArmed = !systemArmed;
+        
+        cardMsg += "✅ Карта: " + owner + "\n";
+        cardMsg += "Действие: " + String(systemArmed ? "ОХРАНА ВКЛ" : "ОХРАНА ВЫКЛ");
+        
+        bot.sendMessage(cardMsg);
+        
+        if (systemArmed) {
+            playSound("arm");
+            logEvent("RFID: " + owner + " включил охрану");
+        } else {
+            playSound("disarm");
+            logEvent("RFID: " + owner + " выключил охрану");
+            alarmActive = false; // Сбрасываем тревогу если была
+        }
+    }
+    
+    // Останавливаем чтение карты
+    rfid.PICC_HaltA();
 }
 
 
@@ -163,11 +297,13 @@ void handleTelegramMessage(FB_msg& msg) {
     if (msg.text == "/arm") {
         systemArmed = true;
         bot.sendMessage("✅ Система поставлена на охрану", msg.chatID);
+        logEvent("Система активирована через Telegram");
     } 
     else if (msg.text == "/disarm") {
         systemArmed = false;
         alarmActive = false;
         bot.sendMessage("🔓 Система снята с охраны", msg.chatID);
+        logEvent("Система деактивирована через Telegram");
     }
     else if (msg.text == "/status") {
         String status = systemArmed ? "🟢 НА ОХРАНЕ" : "🔴 ВЫКЛЮЧЕНА";
@@ -177,6 +313,37 @@ void handleTelegramMessage(FB_msg& msg) {
     else if (msg.text == "/test_sound") {
         playSound("boot");
         bot.sendMessage("🔊 Тест звука выполнен", msg.chatID);
+    }
+    else if (msg.text == "/rfid_status") {
+        String rfidInfo = "📊 RFID статус:\n";
+        rfidInfo += "Модуль: " + String(rfid.PCD_PerformSelfTest() ? "✅" : "❌") + "\n";
+        rfidInfo += "Последняя карта: " + lastCardUID + "\n";
+        rfidInfo += "Всего карт в базе: " + String(tagCount);
+        bot.sendMessage(rfidInfo);
+    }
+    
+    else if (msg.text.startsWith("/add_card")) {
+        // Команда для добавления карты: /add_card Имя
+        String owner = msg.text.substring(9);
+        if (owner.length() > 0) {
+            // Просим приложить карту
+            bot.sendMessage("📌 Приложите карту для добавления как '" + owner + "'");
+            
+            // Здесь нужно реализовать режим обучения
+            // Пока просто заглушка
+            bot.sendMessage("⚠️ Функция в разработке");
+        }
+    }
+    
+    else if (msg.text == "/list_cards") {
+        String list = "📋 Разрешенные карты:\n";
+        for (int i = 0; i < tagCount; i++) {
+            list += String(i+1) + ". " + authorizedTags[i].uid;
+            list += " - " + authorizedTags[i].owner;
+            list += authorizedTags[i].active ? " ✅" : " ❌";
+            list += "\n";
+        }
+        bot.sendMessage(list);
     }
 }
 
@@ -192,7 +359,8 @@ void setup() {
     Serial.println("═══════════════════════════════════════");
     Serial.println("   ОХРАННАЯ СИСТЕМА - ЗАПУСК");
     Serial.println("═══════════════════════════════════════");
-    
+    initRFID();
+
     Serial.println("[1] Serial инициализирован");
     
     // WiFi подключение
@@ -232,6 +400,7 @@ void setup() {
     Serial.println("═══════════════════════════════════════\n");
 
     playSound("boot");
+    logEvent("Система загружена");
 }
 
 
@@ -239,6 +408,7 @@ void setup() {
 void loop() {
     server.handleClient();  // Обработка HTTP-запросов
     bot.tick();             // Обработка Telegram-сообщений
+    checkRFID();          // Проверяем RFID карты
     handleBuzzer();         // Обработка звука
 
     // Автоматическое отключение тревоги через 5 минут
