@@ -9,9 +9,10 @@ bool wifiConnected = false;
 unsigned long lastHeartbeat = 0;
 unsigned long lastMotionTime = 0;
 int motionCounter = 0;
+bool motionAlreadySent = false;  // Флаг для режима L
 
 // === ОТЛАДОЧНЫЙ РЕЖИМ ===
-#define DEBUG_MODE true  // Включить подробные логи
+#define DEBUG_MODE true
 
 // === ФУНКЦИИ ===
 void debugPrint(String message) {
@@ -37,19 +38,15 @@ void sendToServer(String eventType, String sensorId, String value = "") {
                      "&value=" + value;
     
     debugPrint("Отправка: " + eventType + " на " + String(SERVER_IP));
-    debugPrint("Данные: " + postData);
     
-    int startTime = millis();
     int httpCode = http.POST(postData);
-    int endTime = millis();
     
     if (httpCode == 200) {
-        debugPrint("✅ Успешно! Код: " + String(httpCode) + 
-                  ", время: " + String(endTime - startTime) + "мс");
+        debugPrint("✅ Успешно! Код: " + String(httpCode));
         
-        // Специально для motion событий - дополнительный лог
+        // Для motion событий - визуальная индикация
         if (eventType == "motion") {
-            Serial.println("\n🎉🎉🎉 MOTION ОТПРАВЛЕН НА СЕРВЕР! 🎉🎉🎉");
+            Serial.println("\n🎯 MOTION ОТПРАВЛЕН НА СЕРВЕР!");
         }
     } else {
         debugPrint("❌ Ошибка! Код: " + String(httpCode));
@@ -60,12 +57,12 @@ void sendToServer(String eventType, String sensorId, String value = "") {
 
 void checkMotionSensor() {
     static bool lastPirState = false;
-    static bool motionAlreadySent = false;  // Флаг: уже отправили motion для этого срабатывания
+    static bool motionActive = false;
     bool currentPirState = digitalRead(PIR_PIN);
     
-    // Отладочный вывод каждые 2 секунды
+    // Отладка каждые 3 секунды
     static unsigned long lastDebugTime = 0;
-    if (millis() - lastDebugTime > 2000) {
+    if (millis() - lastDebugTime > 3000) {
         Serial.print("PIR: ");
         Serial.print(currentPirState ? "HIGH" : "LOW");
         Serial.print(" | Отправлено: ");
@@ -73,123 +70,171 @@ void checkMotionSensor() {
         lastDebugTime = millis();
     }
     
-    // ОБНАРУЖЕНО НОВОЕ ДВИЖЕНИЕ (передний фронт) 
-    // И мы еще не отправляли для этого срабатывания
-    if (currentPirState == HIGH && lastPirState == LOW && !motionAlreadySent) {
-        Serial.println("\n" + String('=', 40));
-        Serial.println("🎯 НОВОЕ ДВИЖЕНИЕ ОБНАРУЖЕНО!");
-        Serial.println(String('=', 40));
+    // НОВОЕ ДВИЖЕНИЕ (LOW -> HIGH)
+    if (currentPirState == HIGH && lastPirState == LOW) {
+        Serial.println("\n🔴 ДВИЖЕНИЕ ОБНАРУЖЕНО!");
+        motionActive = true;
         
         // Проверяем антифлуд
-        if (millis() - lastMotionTime > PIR_COOLDOWN) {
-            Serial.println("🚨 ОТПРАВЛЯЮ СОБЫТИЕ MOTION!");
+        if (millis() - lastMotionTime > PIR_COOLDOWN && !motionAlreadySent) {
+            Serial.println("📤 ОТПРАВКА НА СЕРВЕР!");
             
             sendToServer("motion", "pir_sensor", "detected");
             lastMotionTime = millis();
-            motionAlreadySent = true; // Помечаем что отправили
+            motionAlreadySent = true;
             
-            // Визуальная индикация
-            for (int i = 0; i < 3; i++) {
-                digitalWrite(STATUS_LED, LOW);
-                delay(150);
+            // Мигаем светодиодом
+            for (int i = 0; i < 5; i++) {
                 digitalWrite(STATUS_LED, HIGH);
-                delay(150);
+                delay(100);
+                digitalWrite(STATUS_LED, LOW);
+                delay(100);
             }
-        } else {
-            Serial.print("⏳ Антифлуд: ждем еще ");
-            Serial.print((PIR_COOLDOWN - (millis() - lastMotionTime)) / 1000);
-            Serial.println(" сек");
         }
     }
     
-    // ДВИЖЕНИЕ ПРЕКРАТИЛОСЬ (задний фронт)
+    // ДВИЖЕНИЕ ПРЕКРАТИЛОСЬ (HIGH -> LOW)
     if (currentPirState == LOW && lastPirState == HIGH) {
-        Serial.println("✅ Движение прекратилось, готов к новому срабатыванию");
-        motionAlreadySent = false; // Сбрасываем флаг
+        Serial.println("🟢 Движение прекратилось, готов к новому");
+        motionActive = false;
+        motionAlreadySent = false;  // Сбрасываем флаг для следующего срабатывания
     }
+    
     lastPirState = currentPirState;
 }
 
 void setup() {
-    Serial.begin(115200);
-    delay(3000); // Ждем подключения монитора
+    // Для ESP32-S3 важно сначала инициализировать Serial
+    #if USE_USB_CDC
+        Serial.begin(115200);
+        // Ждем подключения USB (для отладки)
+        delay(3000);
+    #else
+        Serial.begin(115200);
+        delay(1000);
+    #endif
     
     Serial.println("\n" + String('=', 60));
-    Serial.println("       ОХРАННЫЙ ДАТЧИК - РЕЖИМ ОТЛАДКИ");
+    Serial.println("    ОХРАННЫЙ ДАТЧИК НА ESP32-S3");
     Serial.println(String('=', 60));
     
-    Serial.println("Настройки:");
-    Serial.println("  PIR_PIN: " + String(PIR_PIN));
-    Serial.println("  PIR_COOLDOWN: " + String(PIR_COOLDOWN) + "мс");
-    Serial.println("  MOTION_SENSITIVITY: " + String(MOTION_SENSITIVITY));
-    Serial.println("  SERVER_IP: " + String(SERVER_IP));
+    Serial.print("Чип: ");
+    Serial.println(ESP.getChipModel());
+    Serial.print("Тактовая частота: ");
+    Serial.print(ESP.getCpuFreqMHz());
+    Serial.println(" MHz");
     
     // Настройка пинов
     pinMode(PIR_PIN, INPUT);
     pinMode(STATUS_LED, OUTPUT);
     digitalWrite(STATUS_LED, LOW);
     
+    Serial.println("\n📡 Настройки:");
+    Serial.println("  PIR_PIN: GPIO" + String(PIR_PIN));
+    Serial.println("  STATUS_LED: GPIO" + String(STATUS_LED));
+    Serial.println("  PIR_COOLDOWN: " + String(PIR_COOLDOWN) + " мс");
+    Serial.println("  SERVER_IP: " + String(SERVER_IP));
+    
     // Подключение к WiFi
-    Serial.print("\nПодключение к WiFi...");
+    Serial.print("\n📶 Подключение к WiFi: ");
+    Serial.println(WIFI_SSID);
+    
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
         delay(500);
         Serial.print(".");
-        digitalWrite(STATUS_LED, !digitalRead(STATUS_LED)); // Мигаем
+        digitalWrite(STATUS_LED, !digitalRead(STATUS_LED));
         attempts++;
     }
     
     if (WiFi.status() == WL_CONNECTED) {
         wifiConnected = true;
         Serial.println("\n✅ WiFi подключен!");
-        Serial.println("  IP: " + WiFi.localIP().toString());
+        Serial.println("  IP адрес: " + WiFi.localIP().toString());
+        Serial.println("  MAC адрес: " + WiFi.macAddress());
         Serial.println("  RSSI: " + String(WiFi.RSSI()) + " dBm");
         digitalWrite(STATUS_LED, HIGH); // Постоянно горит
     } else {
-        Serial.println("\n❌ WiFi не подключен!");
-        digitalWrite(STATUS_LED, LOW);
+        Serial.println("\n❌ Ошибка подключения к WiFi!");
+        // Режим аварийной индикации
+        while (true) {
+            digitalWrite(STATUS_LED, HIGH);
+            delay(200);
+            digitalWrite(STATUS_LED, LOW);
+            delay(200);
+        }
     }
     
     // Первый heartbeat
     if (wifiConnected) {
-        sendToServer("heartbeat", "sensor_init", "boot_complete");
-        Serial.println("✅ Первый heartbeat отправлен");
+        sendToServer("heartbeat", "sensor_s3", "boot");
+        Serial.println("\n💓 Первый heartbeat отправлен");
     }
     
-    // Ожидание инициализации PIR
-    Serial.println("\n⏳ Ожидание инициализации PIR (60 сек)...");
-    for (int i = 0; i < 60; i++) {
+    // Инициализация PIR (ждем 30 секунд)
+    Serial.println("\n⏳ Инициализация PIR датчика (30 сек)...");
+    for (int i = 0; i < 30; i++) {
         delay(1000);
         Serial.print(".");
         if (i % 10 == 9) Serial.print(" ");
     }
-    Serial.println("\n✅ PIR готов к работе!");
+    
+    Serial.println("\n✅ Система готова к работе!");
     Serial.println("Помашите рукой перед датчиком для теста");
     Serial.println(String('=', 60) + "\n");
+    
+    // Короткий звуковой сигнал готовности
+    for (int i = 0; i < 2; i++) {
+        digitalWrite(STATUS_LED, HIGH);
+        delay(100);
+        digitalWrite(STATUS_LED, LOW);
+        delay(100);
+    }
 }
 
 void loop() {
-    // Проверяем датчик движения
+    // Проверка датчика движения
     checkMotionSensor();
     
     // Heartbeat каждые 30 секунд
     if (wifiConnected && millis() - lastHeartbeat > HEARTBEAT_INTERVAL) {
-        sendToServer("heartbeat", "sensor_node", "alive");
+        sendToServer("heartbeat", "sensor_s3", "alive");
         lastHeartbeat = millis();
         
-        // Статус каждые 10 heartbeat
+        // Статистика
         static int heartbeatCount = 0;
         heartbeatCount++;
         if (heartbeatCount % 10 == 0) {
-            Serial.println("📊 Статистика:");
+            Serial.println("\n📊 Статистика:");
             Serial.println("  Heartbeat: " + String(heartbeatCount));
-            Serial.println("  Событий motion: " + String(motionCounter));
             Serial.println("  WiFi RSSI: " + String(WiFi.RSSI()) + " dBm");
+            Serial.println("  Uptime: " + String(millis() / 1000) + " сек");
         }
+        
+        // Короткое мигание при heartbeat
+        digitalWrite(STATUS_LED, LOW);
+        delay(50);
+        digitalWrite(STATUS_LED, HIGH);
     }
     
-    // Небольшая задержка
-    delay(50);
+    // Проверка WiFi соединения
+    if (WiFi.status() != WL_CONNECTED) {
+        wifiConnected = false;
+        digitalWrite(STATUS_LED, LOW);
+        
+        // Пытаемся переподключиться
+        static unsigned long lastReconnect = 0;
+        if (millis() - lastReconnect > 30000) { // Каждые 30 секунд
+            Serial.println("🔄 Потеря WiFi, переподключение...");
+            WiFi.reconnect();
+            lastReconnect = millis();
+        }
+    } else {
+        wifiConnected = true;
+        digitalWrite(STATUS_LED, HIGH);
+    }
+    
+    delay(100);
 }
