@@ -1,7 +1,7 @@
 #pragma once
 
 // Пины для ESP32-S3
-#define PIR_PIN 18              // Датчик движения HC-SR501
+#define PIR_PIN 18              // Датчик движения HW-740
 #define STATUS_LED 48           // Встроенный светодиод на ESP32-S3 (обычно GPIO48)
 #define BUTTON_PIN 0            // Кнопка BOOT на S3 (GPIO0)
 
