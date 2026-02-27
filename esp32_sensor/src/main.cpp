@@ -1,20 +1,22 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <vector>
+#include <WebServer.h>
 #include <HTTPClient.h>
 #include "secrets.h"
 #include "config.h"
 
-// === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
+// ===== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====
 bool wifiConnected = false;
 unsigned long lastHeartbeat = 0;
 unsigned long lastMotionTime = 0;
 int motionCounter = 0;
 bool motionAlreadySent = false;  // Флаг для режима L
 
-// === ОТЛАДОЧНЫЙ РЕЖИМ ===
 #define DEBUG_MODE true
 
-// === ФУНКЦИИ ===
+
+// ===== ФУНКЦИИ =====
 void debugPrint(String message) {
     if (DEBUG_MODE) {
         Serial.println("[DEBUG] " + message);
@@ -37,7 +39,10 @@ void sendToServer(String eventType, String sensorId, String value = "") {
                      "&sensor_id=" + sensorId + 
                      "&value=" + value;
     
-    debugPrint("Отправка: " + eventType + " на " + String(SERVER_IP));
+    Serial.print("📤 Отправка: ");
+    Serial.print(eventType);
+    Serial.print(" с value=");
+    Serial.println(value);
     
     int httpCode = http.POST(postData);
     
@@ -104,10 +109,8 @@ void checkMotionSensor() {
 }
 
 void setup() {
-    // Для ESP32-S3 важно сначала инициализировать Serial
     #if USE_USB_CDC
         Serial.begin(115200);
-        // Ждем подключения USB (для отладки)
         delay(3000);
     #else
         Serial.begin(115200);
@@ -200,7 +203,8 @@ void loop() {
     
     // Heartbeat каждые 30 секунд
     if (wifiConnected && millis() - lastHeartbeat > HEARTBEAT_INTERVAL) {
-        sendToServer("heartbeat", "sensor_s3", "alive");
+        String value = "RSSI:" + String(WiFi.RSSI()) + "dBm";  // Добавляем RSSI
+        sendToServer("heartbeat", "sensor_s3", value);        // ← НОВАЯ СТРОКА
         lastHeartbeat = millis();
         
         // Статистика
