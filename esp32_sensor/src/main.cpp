@@ -8,10 +8,9 @@
 
 // ===== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====
 bool wifiConnected = false;
-unsigned long lastHeartbeat = 0;
 unsigned long lastMotionTime = 0;
 int motionCounter = 0;
-bool motionAlreadySent = false;  // Флаг для режима L
+bool motionAlreadySent = false;  // Флаг для режима La
 
 #define DEBUG_MODE true
 
@@ -65,16 +64,6 @@ void checkMotionSensor() {
     static bool motionActive = false;
     bool currentPirState = digitalRead(PIR_PIN);
     
-    // Отладка каждые 3 секунды
-    static unsigned long lastDebugTime = 0;
-    if (millis() - lastDebugTime > 3000) {
-        Serial.print("PIR: ");
-        Serial.print(currentPirState ? "HIGH" : "LOW");
-        Serial.print(" | Отправлено: ");
-        Serial.println(motionAlreadySent ? "ДА" : "НЕТ");
-        lastDebugTime = millis();
-    }
-    
     // НОВОЕ ДВИЖЕНИЕ (LOW -> HIGH)
     if (currentPirState == HIGH && lastPirState == LOW) {
         Serial.println("\n🔴 ДВИЖЕНИЕ ОБНАРУЖЕНО!");
@@ -100,7 +89,7 @@ void checkMotionSensor() {
     
     // ДВИЖЕНИЕ ПРЕКРАТИЛОСЬ (HIGH -> LOW)
     if (currentPirState == LOW && lastPirState == HIGH) {
-        Serial.println("🟢 Движение прекратилось, готов к новому");
+        Serial.println("🟢 Движение прекратилось");
         motionActive = false;
         motionAlreadySent = false;  // Сбрасываем флаг для следующего срабатывания
     }
@@ -109,13 +98,8 @@ void checkMotionSensor() {
 }
 
 void setup() {
-    #if USE_USB_CDC
-        Serial.begin(115200);
-        delay(3000);
-    #else
-        Serial.begin(115200);
-        delay(1000);
-    #endif
+    Serial.begin(115200);
+    delay(3000);
     
     Serial.println("\n" + String('=', 60));
     Serial.println("    ОХРАННЫЙ ДАТЧИК НА ESP32-S3");
@@ -170,12 +154,6 @@ void setup() {
         }
     }
     
-    // Первый heartbeat
-    if (wifiConnected) {
-        sendToServer("heartbeat", "sensor_s3", "boot");
-        Serial.println("\n💓 Первый heartbeat отправлен");
-    }
-    
     // Инициализация PIR (ждем 30 секунд)
     Serial.println("\n⏳ Инициализация PIR датчика (30 сек)...");
     for (int i = 0; i < 30; i++) {
@@ -185,7 +163,6 @@ void setup() {
     }
     
     Serial.println("\n✅ Система готова к работе!");
-    Serial.println("Помашите рукой перед датчиком для теста");
     Serial.println(String('=', 60) + "\n");
     
     // Короткий звуковой сигнал готовности
@@ -200,28 +177,6 @@ void setup() {
 void loop() {
     // Проверка датчика движения
     checkMotionSensor();
-    
-    // Heartbeat каждые 30 секунд
-    if (wifiConnected && millis() - lastHeartbeat > HEARTBEAT_INTERVAL) {
-        String value = "RSSI:" + String(WiFi.RSSI()) + "dBm";  // Добавляем RSSI
-        sendToServer("heartbeat", "sensor_s3", value);        // ← НОВАЯ СТРОКА
-        lastHeartbeat = millis();
-        
-        // Статистика
-        static int heartbeatCount = 0;
-        heartbeatCount++;
-        if (heartbeatCount % 10 == 0) {
-            Serial.println("\n📊 Статистика:");
-            Serial.println("  Heartbeat: " + String(heartbeatCount));
-            Serial.println("  WiFi RSSI: " + String(WiFi.RSSI()) + " dBm");
-            Serial.println("  Uptime: " + String(millis() / 1000) + " сек");
-        }
-        
-        // Короткое мигание при heartbeat
-        digitalWrite(STATUS_LED, LOW);
-        delay(50);
-        digitalWrite(STATUS_LED, HIGH);
-    }
     
     // Проверка WiFi соединения
     if (WiFi.status() != WL_CONNECTED) {
