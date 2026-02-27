@@ -12,7 +12,7 @@
 // ===== СТРУКТУРА ДЛЯ ЛОГОВ =====
 struct LogEntry {
     unsigned long timestamp;  // Время в миллисекундах
-    String eventType;         // Тип события: motion, heartbeat, arm, disarm, rfid
+    String eventType;         // Тип события: motion, arm, disarm, rfid
     String source;            // Источник: sensor1, telegram, rfid
     String details;           // Детали: "Движение в комнате", "Карта: A1 B2 C3 D4"
     bool isAlarm;             // Было ли это тревогой
@@ -113,12 +113,11 @@ String getLastEvents(int count) {
             else if (e.details.indexOf("выключил") >= 0) icon = "🔓";
             else icon = "📇";
         }
-        else if (e.eventType == "motion") icon = "🚶";
-        else if (e.eventType == "heartbeat") icon = "💓";
+        else if (e.eventType == "motion") icon = "👋";
         else if (e.eventType == "arm") icon = "🔒";
         else if (e.eventType == "disarm") icon = "🔓";
         else if (e.eventType == "alarm") icon = "🚨";
-        else if (e.eventType == "rfid") icon = "📇";
+        else if (e.eventType == "rfid") icon = "💳";
         else if (e.eventType == "error") icon = "⚠️";
         else icon = "📌";
         
@@ -248,7 +247,7 @@ void checkRFID() {
     
     if (owner == "unknown") {
         // Неизвестная карта
-        cardMsg += "⛔ НЕИЗВЕСТНАЯ КАРТА!";
+        cardMsg += "❓ Неизвестная карта!";
         bot.sendMessage(cardMsg);
         playSound("rfid_error");
         
@@ -257,7 +256,7 @@ void checkRFID() {
     }
     else if (owner == "disabled") {
         // Отключенная карта
-        cardMsg += "⛔ КАРТА ОТКЛЮЧЕНА!";
+        cardMsg += "⛔ Карта отключена!";
         bot.sendMessage(cardMsg);
         playSound("rfid_error");
         
@@ -268,16 +267,16 @@ void checkRFID() {
         systemArmed = !systemArmed;
         
         cardMsg += "✅ Карта: " + owner + "\n";
-        cardMsg += "Действие: " + String(systemArmed ? "ОХРАНА ВКЛ" : "ОХРАНА ВЫКЛ");
+        cardMsg += "Действие: " + String(systemArmed ? "Система сигнализации включена" : "Система сигнализации выключена");
         
         bot.sendMessage(cardMsg);
         
         if (systemArmed) {
             playSound("arm");
-            addToLog("rfid", "system", "RFID: " + owner + " включил охрану", false);
+            addToLog("rfid", "system", "RFID: " + owner + " включил систему сигнализации", false);
         } else {
             playSound("disarm");
-            addToLog("rfid", "system", "RFID: " + owner + " выключил охрану", false);
+            addToLog("rfid", "system", "RFID: " + owner + " выключил систему сигнализации", false);
             alarmActive = false; // Сбрасываем тревогу если была
         }
     }
@@ -320,23 +319,10 @@ void handleSensorEvent() {
     Serial.print(sensorId);
     Serial.print(" - ");
     Serial.println(eventType);
-    
     addToLog(eventType, sensorId, value, false);
-    
-    // Heartbeat
-    if (eventType == "heartbeat") {
-        static unsigned long lastHeartbeatNotify = 0;
-        if (millis() - lastHeartbeatNotify > 120000) { // Раз в 2 минуты
-            String msg = "📡 Датчик онлайн\n";
-            msg += "IP: " + server.client().remoteIP().toString() + "\n";
-            msg += "Сигнал WiFi: " + String(WiFi.RSSI()) + " dBm";
-            bot.sendMessage(msg);
-            lastHeartbeatNotify = millis();
-        }
-    }
 
     // Движение
-    else if (eventType == "motion") {
+    if (eventType == "motion") {
         String debugMsg = "🔍 Детали движения:\n";
         debugMsg += "Датчик: " + sensorId + "\n";
         debugMsg += "Значение: " + value + "\n"; 
@@ -357,7 +343,7 @@ void handleSensorEvent() {
             
             bot.sendMessage(alarmMsg);
             
-            Serial.println("🚨 АКТИВИРОВАНА ТРЕВОГА!");
+            Serial.println("🚨 АКТИВИРОВАНА ТРЕВОГА! 🚨");
         }
     }
     
@@ -390,25 +376,23 @@ void handleTelegramMessage(FB_msg& msg) {
         welcome += "Статус: " + String(systemArmed ? "🔴 НА ОХРАНЕ" : "🟢 ВЫКЛ") + "\n\n";
         welcome += "Команды:\n";
         welcome += "/status - Статус\n";
-        welcome += "/arm - Включить охрану\n";
-        welcome += "/disarm - Выключить\n";
+        welcome += "/arm - Включить систему сигнализации\n";
+        welcome += "/disarm - Выключить систему сигнализации\n";
         welcome += "/logs - Последние 10 событий\n";
         welcome += "/clear_logs - Очистить лог\n";
-        welcome += "/stats - Статистика";
-        
         bot.sendMessage(welcome, msg.chatID);
     }
 
     if (msg.text == "/arm") {
         systemArmed = true;
-        bot.sendMessage("✅ Система поставлена на охрану", msg.chatID);
-        addToLog("arm", "telegram", "Система поставлена на охрану", false);
+        bot.sendMessage("✅ Система сигнализации включена", msg.chatID);
+        addToLog("arm", "telegram", "Система сигнализации выключена", false);
     } 
     else if (msg.text == "/disarm") {
         systemArmed = false;
         alarmActive = false;
-        bot.sendMessage("🔓 Система снята с охраны", msg.chatID);
-        addToLog("disarm", "telegram", "Система снята с охраны", false);
+        bot.sendMessage("🔓 Система сигнализации выключена", msg.chatID);
+        addToLog("disarm", "telegram", "Система сигнализации выключена", false);
     }
      else if (msg.text == "/logs") {
         String logs = getLastEvents(10);
@@ -418,25 +402,6 @@ void handleTelegramMessage(FB_msg& msg) {
         eventLog.clear();
         addToLog("system", "telegram", "Лог очищен", false);
         bot.sendMessage("🧹 Лог очищен", msg.chatID);
-    }
-    else if (msg.text == "/stats") {
-        String stats = "📊 *Статистика системы*\n\n";
-        stats += "Событий в логе: " + String(eventLog.size()) + "/" + String(MAX_LOG_SIZE) + "\n";
-        
-        // Подсчет по типам
-        int motionCount = 0, alarmCount = 0, armCount = 0;
-        for (const auto& e : eventLog) {
-            if (e.eventType == "motion") motionCount++;
-            if (e.isAlarm) alarmCount++;
-            if (e.eventType == "arm" || e.eventType == "disarm") armCount++;
-        }
-        
-        stats += "Движений: " + String(motionCount) + "\n";
-        stats += "Тревог: " + String(alarmCount) + "\n";
-        stats += "Переключений: " + String(armCount) + "\n";
-        stats += "Аптайм: " + String(millis() / 1000 / 60) + " мин";
-        
-        bot.sendMessage(stats, msg.chatID);
     }
     else if (msg.text == "/test_sound") {
         playSound("boot");
@@ -449,20 +414,6 @@ void handleTelegramMessage(FB_msg& msg) {
         rfidInfo += "Всего карт в базе: " + String(tagCount);
         bot.sendMessage(rfidInfo);
     }
-    
-    else if (msg.text.startsWith("/add_card")) {
-        // Команда для добавления карты: /add_card Имя
-        String owner = msg.text.substring(9);
-        if (owner.length() > 0) {
-            // Просим приложить карту
-            bot.sendMessage("📌 Приложите карту для добавления как '" + owner + "'");
-            
-            // Здесь нужно реализовать режим обучения
-            // Пока просто заглушка
-            bot.sendMessage("⚠️ Функция в разработке");
-        }
-    }
-    
     else if (msg.text == "/list_cards") {
         String list = "📋 Разрешенные карты:\n";
         for (int i = 0; i < tagCount; i++) {
@@ -485,7 +436,7 @@ void setup() {
     
     Serial.println("\n\n\n");
     Serial.println("═══════════════════════════════════════");
-    Serial.println("   ОХРАННАЯ СИСТЕМА - ЗАПУСК");
+    Serial.println("   Охранная система - запуск");
     Serial.println("═══════════════════════════════════════");
     initRFID();
 
@@ -506,11 +457,11 @@ void setup() {
     Serial.println();
     
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("[4] ✅ WiFi ПОДКЛЮЧЕН!");
+        Serial.println("[4] ✅ Wi-Fi подключен ");
         Serial.print("    IP: ");
         Serial.println(WiFi.localIP());
     } else {
-        Serial.println("[4] ❌ WiFi НЕ ПОДКЛЮЧЕН!");
+        Serial.println("[4] ❌ Wi-Fi не подключен");
         Serial.println("    Проверьте SSID/пароль в secrets.h");
     }
     
@@ -544,6 +495,15 @@ void loop() {
         bot.sendMessage("⏰ Тревога автоматически отключена\nПрошло 5 минут");
         Serial.println("Тревога автоматически отключена");
     }
+
+    // Проверка Wi-Fi
+    if (WiFi.status() != WL_CONNECTED) {
+        static unsigned long lastReconnect = 0;
+        if (millis() - lastReconnect > 30000) { // Каждые 30 секунд
+            Serial.println("🔄 Потеря WiFi, переподключение...");
+            WiFi.reconnect();
+            lastReconnect = millis();
+        }
 
     delay(10);
 }
