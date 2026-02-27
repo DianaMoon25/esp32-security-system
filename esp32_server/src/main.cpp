@@ -2,14 +2,28 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <FastBot.h>
+#include <vector>
 #include <SPI.h>
 #include <MFRC522.h>
 #include "secrets.h"
 #include "config.h"
 #include "rfid_tags.h"
 
+// ===== СТРУКТУРА ДЛЯ ЛОГОВ =====
+struct LogEntry {
+    unsigned long timestamp;  // Время в миллисекундах
+    String eventType;         // Тип события: motion, heartbeat, arm, disarm, rfid
+    String source;            // Источник: sensor1, telegram, rfid
+    String details;           // Детали: "Движение в комнате", "Карта: A1 B2 C3 D4"
+    bool isAlarm;             // Было ли это тревогой
+};
+
+// ===== Глобальные переменные =====
 WebServer server(80);
 FastBot bot(BOT_TOKEN);
+bool systemArmed = false;
+bool alarmActive = false;
+String lastEvent = "";
 
 
 // ===== RFID =====
@@ -17,13 +31,6 @@ MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);
 unsigned long lastRFIDRead = 0;
 String lastCardUID = "";
 int cardReadCount = 0;
-
-
-// ===== Переменные состояния =====
-bool systemArmed = false;
-bool alarmActive = false;
-unsigned long alarmStartTime = 0;
-String lastEvent = "";
 
 
 // ===== Вспомогательная функция для времени =====
@@ -45,12 +52,90 @@ String getTimeString() {
 
 
 // ===== Логирование =====
-void logEvent(String event) {
-    lastEvent = event;
-    // Здесь сохраняем в файл/EEPROM
-    Serial.println("Событие: " + event);
-    // Отправляем всем админам (можно хранить chatID в EEPROM)
-    bot.sendMessage("📝 " + event, "ADMIN_CHAT_ID");
+std::vector<LogEntry> eventLog;
+const int MAX_LOG_SIZE = 20; // Максимальное количество сохраняемых логов
+
+// Добавление в логи
+void addToLog(String type, String source, String details, bool isAlarm = false) {
+    LogEntry entry;
+    entry.timestamp = millis();
+    entry.eventType = type;
+    entry.source = source;
+    entry.details = details;
+    entry.isAlarm = isAlarm;
+    
+    // Добавляем в начало вектора (новые события сверху)
+    eventLog.insert(eventLog.begin(), entry);
+    
+    // Ограничиваем размер
+    if (eventLog.size() > MAX_LOG_SIZE) {
+        eventLog.pop_back(); // Удаляем самое старое
+    }
+    
+    // Вывод в Serial для отладки
+    Serial.print("📝 Лог: [");
+    Serial.print(type);
+    Serial.print("] ");
+    Serial.print(source);
+    Serial.print(" - ");
+    Serial.println(details);
+}
+
+// Получение последних n событий (n <= MAX_LOG_SIZE)
+String getLastEvents(int count) {
+    if (eventLog.empty()) {
+        return "📭 Лог пуст";
+    }
+    
+    String result = "📋 *Последние события*\n\n";
+    result += "┌─────────────────────\n";
+    
+    int maxCount = min(count, (int)eventLog.size());
+    for (int i = 0; i < maxCount; i++) {
+        LogEntry e = eventLog[i];
+        
+        // Форматируем время (секунды назад)
+        unsigned long secondsAgo = (millis() - e.timestamp) / 1000;
+        String timeStr;
+        if (secondsAgo < 60) {
+            timeStr = String(secondsAgo) + " сек назад";
+        } else if (secondsAgo < 3600) {
+            timeStr = String(secondsAgo / 60) + " мин назад";
+        } else {
+            timeStr = String(secondsAgo / 3600) + " ч назад";
+        }
+        
+        // Иконка в зависимости от типа
+        String icon;
+        if (e.eventType == "rfid") {
+            if (e.details.indexOf("ERROR") >= 0) icon = "⛔";
+            else if (e.details.indexOf("включил") >= 0) icon = "🔒";
+            else if (e.details.indexOf("выключил") >= 0) icon = "🔓";
+            else icon = "📇";
+        }
+        else if (e.eventType == "motion") icon = "🚶";
+        else if (e.eventType == "heartbeat") icon = "💓";
+        else if (e.eventType == "arm") icon = "🔒";
+        else if (e.eventType == "disarm") icon = "🔓";
+        else if (e.eventType == "alarm") icon = "🚨";
+        else if (e.eventType == "rfid") icon = "📇";
+        else if (e.eventType == "error") icon = "⚠️";
+        else icon = "📌";
+        
+        result += "│ ";
+        result += icon + " ";
+        result += "[" + timeStr + "]\n";
+        result += "│  " + e.source + ": " + e.details + "\n";
+        
+        if (i < maxCount - 1) {
+            result += "├─────────────────────\n";
+        }
+    }
+    
+    result += "└─────────────────────\n";
+    result += "📊 Всего событий: " + String(eventLog.size());
+    
+    return result;
 }
 
 
@@ -102,7 +187,7 @@ void handleBuzzer() {
 }
 
 
-// === ФУНКЦИЯ ДЛЯ RFID ===
+// ===== RFID =====
 void initRFID() {
     SPI.begin();           // Инициализация SPI
     rfid.PCD_Init();       // Инициализация RFID
@@ -168,7 +253,7 @@ void checkRFID() {
         playSound("rfid_error");
         
         // Логируем попытку доступа
-        logEvent("RFID_ERROR: Неизвестная карта " + uid);
+        addToLog("rfid", "system", "RFID_ERROR: Неизвестная карта " + uid, false);
     }
     else if (owner == "disabled") {
         // Отключенная карта
@@ -176,7 +261,7 @@ void checkRFID() {
         bot.sendMessage(cardMsg);
         playSound("rfid_error");
         
-        logEvent("RFID_ERROR: Отключенная карта " + uid);
+        addToLog("rfid", "system", "RFID_ERROR: Отключенная карта " + uid, false);
     }
     else {
         // Разрешенная карта - переключаем охрану
@@ -189,10 +274,10 @@ void checkRFID() {
         
         if (systemArmed) {
             playSound("arm");
-            logEvent("RFID: " + owner + " включил охрану");
+            addToLog("rfid", "system", "RFID: " + owner + " включил охрану", false);
         } else {
             playSound("disarm");
-            logEvent("RFID: " + owner + " выключил охрану");
+            addToLog("rfid", "system", "RFID: " + owner + " выключил охрану", false);
             alarmActive = false; // Сбрасываем тревогу если была
         }
     }
@@ -236,6 +321,8 @@ void handleSensorEvent() {
     Serial.print(" - ");
     Serial.println(eventType);
     
+    addToLog(eventType, sensorId, value, false);
+    
     // Heartbeat
     if (eventType == "heartbeat") {
         static unsigned long lastHeartbeatNotify = 0;
@@ -258,6 +345,8 @@ void handleSensorEvent() {
         if (systemArmed && !alarmActive) {
             alarmActive = true;
             alarmStartTime = millis();
+
+            addToLog("alarm", sensorId, "Обнаружено движение! Тревога!", true);
 
             playSound("alarm"); // Запускаем сирену
         
@@ -294,21 +383,60 @@ void handleStatus() {
 
 // ===== Telegram команды =====
 void handleTelegramMessage(FB_msg& msg) {
+    addToLog("telegram", "user", "Команда: " + msg.text, false);
+
+    if (msg.text == "/start") {
+        String welcome = "🚨 *Охранная система*\n\n";
+        welcome += "Статус: " + String(systemArmed ? "🔴 НА ОХРАНЕ" : "🟢 ВЫКЛ") + "\n\n";
+        welcome += "Команды:\n";
+        welcome += "/status - Статус\n";
+        welcome += "/arm - Включить охрану\n";
+        welcome += "/disarm - Выключить\n";
+        welcome += "/logs - Последние 10 событий\n";
+        welcome += "/clear_logs - Очистить лог\n";
+        welcome += "/stats - Статистика";
+        
+        bot.sendMessage(welcome, msg.chatID);
+    }
+
     if (msg.text == "/arm") {
         systemArmed = true;
         bot.sendMessage("✅ Система поставлена на охрану", msg.chatID);
-        logEvent("Система активирована через Telegram");
+        addToLog("arm", "telegram", "Система поставлена на охрану", false);
     } 
     else if (msg.text == "/disarm") {
         systemArmed = false;
         alarmActive = false;
         bot.sendMessage("🔓 Система снята с охраны", msg.chatID);
-        logEvent("Система деактивирована через Telegram");
+        addToLog("disarm", "telegram", "Система снята с охраны", false);
     }
-    else if (msg.text == "/status") {
-        String status = systemArmed ? "🟢 НА ОХРАНЕ" : "🔴 ВЫКЛЮЧЕНА";
-        status += "\nIP: " + WiFi.localIP().toString();
-        bot.sendMessage(status, msg.chatID);
+     else if (msg.text == "/logs") {
+        String logs = getLastEvents(10);
+        bot.sendMessage(logs, msg.chatID);
+    }
+    else if (msg.text == "/clear_logs") {
+        eventLog.clear();
+        addToLog("system", "telegram", "Лог очищен", false);
+        bot.sendMessage("🧹 Лог очищен", msg.chatID);
+    }
+    else if (msg.text == "/stats") {
+        String stats = "📊 *Статистика системы*\n\n";
+        stats += "Событий в логе: " + String(eventLog.size()) + "/" + String(MAX_LOG_SIZE) + "\n";
+        
+        // Подсчет по типам
+        int motionCount = 0, alarmCount = 0, armCount = 0;
+        for (const auto& e : eventLog) {
+            if (e.eventType == "motion") motionCount++;
+            if (e.isAlarm) alarmCount++;
+            if (e.eventType == "arm" || e.eventType == "disarm") armCount++;
+        }
+        
+        stats += "Движений: " + String(motionCount) + "\n";
+        stats += "Тревог: " + String(alarmCount) + "\n";
+        stats += "Переключений: " + String(armCount) + "\n";
+        stats += "Аптайм: " + String(millis() / 1000 / 60) + " мин";
+        
+        bot.sendMessage(stats, msg.chatID);
     }
     else if (msg.text == "/test_sound") {
         playSound("boot");
@@ -400,7 +528,6 @@ void setup() {
     Serial.println("═══════════════════════════════════════\n");
 
     playSound("boot");
-    logEvent("Система загружена");
 }
 
 
